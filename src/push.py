@@ -171,9 +171,11 @@ def send_push_notification(sub_endpoint, events, notification_type, user_id=None
     def _post_and_store(session, payload, event_uids=None):
         try:
             resp = session.post(notify_url, headers=headers, json=payload, timeout=10)
-            ok = resp.status_code == 200
+            status = resp.status_code
+            ok = status == 200
+            removed = status in (403, 404, 410)
             if not ok and _LOGGER:
-                _LOGGER.error(f"[push-notifier] notify POST failed: {resp.status_code} {resp.text}")
+                _LOGGER.error(f"[push-notifier] notify POST failed: {status} {resp.text}")
             else:
                 if _LOGGER:
                     _LOGGER.debug(f"[push-notifier] notify POST succeeded: title={payload.get('title')}")
@@ -187,11 +189,11 @@ def send_push_notification(sub_endpoint, events, notification_type, user_id=None
                 except Exception:
                     if _LOGGER:
                         _LOGGER.error("[push-notifier] failed to store push_sent entries")
-            return ok
+            return ok, removed
         except Exception as e:
             if _LOGGER:
                 _LOGGER.error(f"[push-notifier] notify request exception: {e}")
-            return False
+            return False, False
 
     if notification_type == "Daily Notification":
         # single notification summarizing the day's events
@@ -215,11 +217,18 @@ def send_push_notification(sub_endpoint, events, notification_type, user_id=None
     else:
 
         # Last Minute / immediate: send each event individually using a single Session
+        results = []
         with requests.Session() as s:
             for ev in events:
                 title = "Nuova variazione dell'orario!"
                 body = _build_body_for_event(ev, tz, today, tomorrow)
                 payload = {"title": title, "body": body, "url": ev.get('htmlLink', f'/dashboard?id={ev.get('uid', '')}'), "endpoint": sub_endpoint}
                 uid = ev.get('uid')
-                _post_and_store(s, payload, event_uids=[uid] if uid else None)
-        return True
+                ok, removed = _post_and_store(s, payload, event_uids=[uid] if uid else None)
+                results.append(ok)
+                if removed:
+                    # backend indicated subscription removed (410/404/403) — stop sending further events for this endpoint
+                    if _LOGGER:
+                        _LOGGER.info(f"[push-notifier] endpoint removed, stopping further sends for endpoint: {sub_endpoint}")
+                    break
+        return results
