@@ -95,7 +95,7 @@ def send_push_notification(sub_endpoint, events, notification_type, user_id=None
         title = f"Daily Notification ({len(events)} event{'o' if len(events) == 1 else 'i'})"
         if len(events) > 1:
             body = f"Sono previsti {len(events)} evento{'o' if len(events) == 1 else 'i'}."
-            payload = {"title": title, "body": body, "url": "/dashboard"}
+            payload = {"title": title, "body": body, "url": "/dashboard", "endpoint": sub_endpoint}
             # Send one notification via backend notify endpoint
             notify_url = os.getenv("BACKEND_URL") + "/user/push/notify"
             try:
@@ -125,7 +125,7 @@ def send_push_notification(sub_endpoint, events, notification_type, user_id=None
         else:
             # single event: build detailed body
             body = _build_body_for_event(events[0], tz, today, tomorrow)
-            payload = {"title": title, "body": body, "url": events[0].get('htmlLink', f'/dashboard?id={events[0].get("uid", "")}')}
+            payload = {"title": title, "body": body, "url": events[0].get('htmlLink', f'/dashboard?id={events[0].get("uid", "")}'), "endpoint": sub_endpoint}
             notify_url = os.getenv("BACKEND_URL") + "/user/push/notify"
             try:
                 with requests.Session() as s:
@@ -168,7 +168,7 @@ def send_push_notification(sub_endpoint, events, notification_type, user_id=None
             for ev in events:
                 title = "Nuova variazione dell'orario!"
                 body = _build_body_for_event(ev, tz, today, tomorrow)
-                payload = {"title": title, "body": body, "url": ev.get('htmlLink', f'/dashboard?id={ev.get("uid", "")}')}
+                payload = {"title": title, "body": body, "url": ev.get('htmlLink', f'/dashboard?id={ev.get("uid", "")}'), "endpoint": sub_endpoint}
                 try:
                     resp = s.post(notify_url, headers=headers, json=payload, timeout=10)
                     ok = resp.status_code == 200
