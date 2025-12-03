@@ -13,13 +13,16 @@ except Exception:
 
 
 def _parse_event_datetime(ev: dict, tz):
-    """Return (ev_date: date|None, time_str: str|None).
-    Accepts ISO datetimes or already-formatted HH:MM strings; also checks start.date.
-    Keeps parsing defensive and logs on parse failures.
+    """Return (start_date, start_time, end_date, end_time).
+    Each value may be None. Accepts ISO datetimes or already-formatted HH:MM strings;
+    also checks start.date / end.date. Keeps parsing defensive and logs on parse failures.
     """
-    ev_date = None
-    time_str = ''
+    start_date = None
+    start_time = ''
+    end_date = None
+    end_time = ''
 
+    # start.dateTime or start.date
     sdt = ev.get('start.dateTime')
     if sdt:
         if 'T' in sdt:
@@ -28,58 +31,120 @@ def _parse_event_datetime(ev: dict, tz):
                 if dt.tzinfo is None:
                     dt = tz.localize(dt)
                 dt = dt.astimezone(tz)
-                time_str = dt.strftime('%H:%M')
-                ev_date = dt.date()
+                start_time = dt.strftime('%H:%M')
+                start_date = dt.date()
             except Exception:
-                time_str = sdt
+                start_time = sdt
                 if _LOGGER:
                     _LOGGER.debug(f"_parse_event_datetime: failed to parse start.dateTime '{sdt}'")
         else:
             # already a time string like 'HH:MM'
-            time_str = sdt
+            start_time = sdt
 
-    # If explicit start.date provided, prefer it for date resolution
     sd = ev.get('start.date')
     if sd:
         try:
             if '-' in sd:
-                ev_date = datetime.strptime(sd, '%Y-%m-%d').date()
+                start_date = datetime.strptime(sd, '%Y-%m-%d').date()
             elif '/' in sd:
-                ev_date = datetime.strptime(sd, '%d/%m/%Y').date()
+                start_date = datetime.strptime(sd, '%d/%m/%Y').date()
         except Exception:
             if _LOGGER:
                 _LOGGER.debug(f"_parse_event_datetime: failed to parse start.date '{sd}'")
 
-    return ev_date, time_str
+    # end.dateTime or end.date
+    edt = ev.get('end.dateTime')
+    if edt:
+        if 'T' in edt:
+            try:
+                dt = datetime.fromisoformat(edt)
+                if dt.tzinfo is None:
+                    dt = tz.localize(dt)
+                dt = dt.astimezone(tz)
+                end_time = dt.strftime('%H:%M')
+                end_date = dt.date()
+            except Exception:
+                end_time = edt
+                if _LOGGER:
+                    _LOGGER.debug(f"_parse_event_datetime: failed to parse end.dateTime '{edt}'")
+        else:
+            end_time = edt
+
+    ed = ev.get('end.date')
+    if ed:
+        try:
+            if '-' in ed:
+                end_date = datetime.strptime(ed, '%Y-%m-%d').date()
+            elif '/' in ed:
+                end_date = datetime.strptime(ed, '%d/%m/%Y').date()
+        except Exception:
+            if _LOGGER:
+                _LOGGER.debug(f"_parse_event_datetime: failed to parse end.date '{ed}'")
+
+    return start_date, start_time or None, end_date, end_time or None
 
 
 def _build_body_for_event(ev: dict, tz, today, tomorrow):
-    ev_date, time_str = _parse_event_datetime(ev, tz)
+    start_date, start_time, end_date, end_time = _parse_event_datetime(ev, tz)
 
     # Use formatted time if available (from main.py format_event_for_display)
-    formatted_time = ev.get('_formatted_time')
-    if formatted_time:
-        time_str = formatted_time
-
-    # Determine human readable day descriptor
-    if ev_date == today:
-        when = 'Oggi'
-    elif ev_date == tomorrow:
-        when = 'Domani'
-    elif ev_date is not None:
-        when = ev_date.strftime('%d/%m/%Y')
-    else:
-        when = ''
+    formatted_start = ev.get('_formatted_time')
+    if formatted_start:
+        start_time = formatted_start
+    # main.py may format end.dateTime as HH:MM; prefer explicit _formatted_end_time if present
+    formatted_end = ev.get('_formatted_end_time') or ev.get('end.dateTime')
+    if formatted_end and ':' in str(formatted_end):
+        end_time = formatted_end
 
     summary = ev.get('summary', '').strip()
-    if when and time_str:
-        return f"{when} alle {time_str}: {summary}"
-    if time_str:
-        if when:
-            return f"{when} {time_str}: {summary}"
-        return f"Alle {time_str} {summary}"
-    if when:
-        return f"{when} {summary}"
+
+    # Helper to format a date to human DD/MM (no year)
+    def _fmt_date_short(d):
+        return d.strftime('%d/%m') if d else None
+
+    # Same-day events (or only start date known)
+    if start_date and (not end_date or start_date == end_date):
+        if start_date == today:
+            day_label = 'Oggi'
+        elif start_date == tomorrow:
+            day_label = 'Domani'
+        else:
+            day_label = _fmt_date_short(start_date)
+
+        if start_time and end_time:
+            return f"{day_label} {start_time} - {end_time}: {summary}"
+        if start_time:
+            return f"{day_label} {start_time}: {summary}"
+        if day_label:
+            return f"{day_label}: {summary}"
+
+    # Multi-day events
+    if start_date and end_date and start_date != end_date:
+        start_str = _fmt_date_short(start_date)
+        end_str = _fmt_date_short(end_date)
+        # If both have times, include them per day
+        if start_time and end_time:
+            return f"{start_str} {start_time} - {end_str} {end_time}: {summary}"
+        # If only dates, show date range without year
+        return f"{start_str} - {end_str}: {summary}"
+
+    # If only end date/time present
+    if end_date and not start_date:
+        if end_date == today:
+            day_label = 'Oggi'
+        elif end_date == tomorrow:
+            day_label = 'Domani'
+        else:
+            day_label = _fmt_date_short(end_date)
+        if end_time:
+            return f"{day_label} {end_time}: {summary}"
+        return f"{day_label}: {summary}"
+
+    # Fallbacks: if times exist without dates or nothing parsed
+    if start_time and end_time:
+        return f"{start_time} - {end_time}: {summary}"
+    if start_time:
+        return f"{start_time}: {summary}"
     return summary
 
 
